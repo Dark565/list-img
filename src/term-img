@@ -68,6 +68,9 @@ for i in ${w3mimg_paths[@]}; do
 	[[ -x $i ]] && w3mimg=$i
 done
 
+export LANG=C
+export LC_ALL=C
+
 [[ -z $w3mimg ]] && die "No executable w3mimgdisplay found"
 
 DELAY=0.1
