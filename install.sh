@@ -14,7 +14,7 @@ usage() {
 
 DIR="/usr/bin"
 while [[ -n $1 ]]; do
-	case "$i" in
+	case "$1" in
 		-d )
 			[[ -n $2 ]] || usage 1
 			DIR="$2"
