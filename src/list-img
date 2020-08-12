@@ -1,0 +1,347 @@
+#!/bin/bash
+
+# Copyright (C) 2020  Grzegorz Kociołek
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+# List files and show images
+
+die() {
+	echo "$*" >&2
+	exit 1
+}
+
+program_installed() {
+	type -P "$1" &>/dev/null
+}
+
+
+alter_buffer_on() {
+	tput smcup 
+}
+
+alter_buffer_off() {
+	tput rmcup
+}
+
+silent_term_on() {
+	stty -echo <&1
+	printf "\e[?25l"
+}
+
+silent_term_off() {
+	stty echo <&1
+	printf "\e[?25h"
+}
+
+clean() {
+	alter_buffer_off   # Switch back to the old buffer
+	silent_term_off
+	rm -r "${TEMP_DIR}"
+}
+
+clean_n_die() {
+	clean
+	die "$*"
+}
+
+clean_n_exit() {
+	clean
+	exit $1
+}
+
+declare -r W=0
+declare -r H=1
+set_geo() {
+	cols=$(tput cols)
+	lines=$(tput lines)
+
+	w_geo=( $(xdotool getwindowgeometry $WINDOWID | grep Geometry: | sed -E 's/^.*\s([^x]+)x(.+)$/\1 \2/') )
+
+	px_per_col=$((${w_geo[W]} / cols))
+	px_per_line=$((${w_geo[H]} / lines))
+
+	(( ${w_geo[X]} < g_img_width )) && clean_n_die "Terminal window too small to display an image"
+}
+
+shorten_path() {
+	local txt=$1
+	local cols=$2
+
+	[[ ${#txt} -le $cols ]] && { SHORTEN_PATH=$txt; return 0; }
+
+	local isdir
+	[[ $txt =~ /$ ]] && { isdir=1; txt="${txt%/}"; }
+
+	local res_txt=
+	local end_txt
+	if [[ $txt =~ ^(/)?([^/]*)/(.*/)?([^/]*)$ ]]; then
+		local isbeg=${#BASH_REMATCH[1]}
+		local sel_txt=${BASH_REMATCH[2]}
+		local sum_txt="${BASH_REMATCH[1]}${BASH_REMATCH[2]}/"
+		local m_slash="${BASH_REMATCH[3]}"
+		end_txt=${BASH_REMATCH[4]}
+
+		res_txt+=${BASH_REMATCH[1]}
+		if (( ${#sum_txt} >= $cols )); then
+			res_txt+=".../"
+		else
+			res_txt+="$sel_txt/"
+			if [[ -n $m_slash ]]; then
+				res_txt+='.../'
+			fi
+		fi
+	else
+		end_txt=$txt
+	fi
+
+	if (( ${#res_txt} + ${#end_txt} >= $cols )); then
+		if [[ $end_txt =~ (.)(\.[^\.]*)?$ ]]; then
+			end_txt="...${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+		fi
+	fi
+	
+	res_txt+=$end_txt
+	[[ -n $isdir ]] && res_txt+='/'
+	(( ${#res_txt} >= $cols )) && return 1
+
+	SHORTEN_PATH=${res_txt}
+}
+
+# f = file
+# d = directory
+# o = other
+# e = error (doesn't exist)
+FILETYPE=
+get_filetype() {
+	if [[ -e $1 ]]; then
+		[[ -d $2 ]] && { FILETYPE='d'; return; }
+		[[ -f $1 ]] && { FILETYPE='f'; return; }
+		FILETYPE='o'
+	else
+		FILETYPE='e'
+	fi
+}
+
+is_pos_float_num() {
+	[[ $1 =~ ^(0|[1-9][0-9]*)(\.[0-9]*)?$ ]]
+}
+
+is_pos_num() {
+	[[ $1 =~ ^[1-9][0-9]*$ ]]
+}
+
+is_pos0_num() {
+	[[ $1 =~ ^(0|[1-9][0-9]*)$ ]]
+}
+
+lines_down() {
+	printf "\e[$1E"
+}
+
+winch() {
+	clean_n_die "Resizing not supported"
+}
+
+ansi_red=$'\e[1;31m'
+ansi_gray=$'\e[1;30m'
+ansi_green=$'\e[1;32m'
+ansi_yellow=$'\e[1;33m'
+ansi_blue=$'\e[1;34m'
+ansi_normal=$'\e[0m'
+print_color() {
+	printf "$1%s${ansi_normal}" "$*"
+}
+export LANG=C
+export LC_ALL=C
+
+tty -s <&1 || die "stdout is not a terminal"
+
+[[ -n $DISPLAY ]]  || die "DISPLAY not specified"
+[[ -n $WINDOWID ]] || die "WINDOWID not specified, probably not an X11 terminal emulator"
+
+program_installed xdotool  || die "xdotool not installed"
+program_installed term-img || die "term-img not installed"
+program_installed identify || die "identify (ImageMagick) not installed"
+program_installed convert  || die "convert (ImageMagick) not installed"
+program_installed tput     || die "tput (ncurses) not installed"
+program_installed stty     || die "stty (coreutils) not installed"
+
+g_img_width=75
+g_refresh=1
+g_cycles=
+
+progname=${0##*/}
+usage() {
+	exec 1>&2
+	echo "Draw images from stdin in a terminal."
+	echo " Usage: ${progname} [-w <px>] [-r <sec> ] [-n{s,a}]"
+	echo
+	echo "Options:"
+	echo " -w    Image width (in pixels; default: 75)."
+	echo " -r    Refresh time (in seconds; default: 1)."
+	echo " -c    How many cycles images have to be printed (default: 0 aka infinity)"
+	echo " -ns   Don't silent the terminal input."
+	echo " -na   Don't use an alternate buffer."
+	exit $1
+}
+
+while [[ -n $1 ]]; do
+	case "$1" in
+		-w )
+			is_pos_num "$2" && g_img_width=$2 || die "-w: Invalid width"
+			shift 1
+			;;
+		-r )
+			is_pos_float_num "$2" && g_refresh="$2" || die "-r: Invalid refresh interval"
+			shift 1
+			;;
+		-c )
+			is_pos0_num "$2" || die "-c: Invalid cycles count"
+			[[ $2 -eq 0 ]] || g_cycles=$2
+			shift 1
+			;;
+		-ns )
+			silent_term_on() { :; }
+			silent_term_off() { :; }
+			;;
+
+		-na )
+			alter_buffer_on() { :; }
+			alter_buffer_off() { :; }
+			;;
+		* )
+			usage 1
+			;;
+	esac
+	shift 1
+done
+
+TEMP_DIR=$(mktemp -d) || die "Cannot create a temporary directory"
+
+alter_buffer_on # Switch to the alternative buffer
+silent_term_on  # Silent the terminal input
+tput cup 0 0    # Move the cursor to 0, 0 line, col
+tput ed         # Clear the buffer
+
+trap 'winch' WINCH
+trap 'clean_n_exit 1' INT TERM
+set_geo
+
+declare -a FILE_DIM
+FILE_W=
+FILE_H=
+
+f_cnt=0
+declare -a f_names
+declare -a f_dim_ws
+declare -a f_dim_hs
+declare -a f_pos_xs
+declare -a f_pos_ys
+
+g_pos_x=0
+g_pos_y=0
+
+line=0
+while read -r LINE; do
+	shorten_path "$LINE" $cols || clean_n_die "Path is too long to display even if shorted"
+	
+	get_filetype "$LINE"
+	prt_color=
+	file_color=
+	for i in :; do
+		case $FILETYPE in
+			'f' )
+				if FILE_DIM=( $(identify -format "%w %h" "$LINE" 2>/dev/null) ); then
+					FILE_W=${FILE_DIM[W]}
+					FILE_H=${FILE_DIM[H]}
+
+					if (( $FILE_W > $FILE_H )); then
+						FILE_H=$(( FILE_H * g_img_width / FILE_W ))
+						FILE_W=$g_img_width
+					else 
+						FILE_W=$(( FILE_W * g_img_width / FILE_H ))
+						FILE_H=$g_img_width
+					fi
+
+					if ! [[ $LINE =~ \.(jpe?g|png)$ ]]; then
+						tmp_file_path="${TEMP_DIR}/$f_cnt.png"
+						if ! convert -scale $FILE_W:$FILE_H "$LINE" "$tmp_file_path" 2>/dev/null; then
+							prt_color="${ansi_yellow}"
+							break
+						fi
+					else
+						tmp_file_path="$LINE"
+					fi
+					
+					(( adj_h = FILE_H % px_per_line )) && adj_h=$(( FILE_H - adj_h + px_per_line )) || adj_h=$FILE_H 
+					lines_down_n=$(( adj_h / px_per_line ))
+
+					let f_cnt++
+					f_names+=( "$tmp_file_path" )
+					f_dim_ws+=( $FILE_W )
+					f_dim_hs+=( $FILE_H )
+					f_dim_xs+=( 0 )
+					f_dim_ys+=( $g_pos_y )
+
+					let g_pos_y+=$adj_h
+					
+					lines_down $lines_down_n
+					let line+=$lines_down_n
+
+					#fi
+
+					prt_color="${ansi_green}"
+					
+				else
+					prt_color="${ansi_blue}"
+				fi
+				;;
+			'd' )
+				prt_color="${ansi_gray}"
+				;;
+			'o' )
+				prt_color=
+				;;
+			'e' )
+				prt_color="${ansi_red}"
+				;;
+		esac
+	done
+	print_color "${prt_color}" "${SHORTEN_PATH}"
+	let line++
+	(( $line > $lines )) && break
+	let g_pos_y+=$px_per_line
+
+
+	(( $g_pos_y > ${w_geo[H]} - ${g_img_width} - ${px_per_line} )) && break
+	echo
+	
+done
+
+CYCLE_N=0
+if [[ $f_cnt -gt 0 ]]; then
+	while :; do
+		for ((i=0;i<f_cnt;i++)); do	
+			term-img -w 0 -p ${f_dim_xs[i]}:${f_dim_ys[i]} -s ${f_dim_ws[i]}:${f_dim_hs[i]} "${f_names[i]}"
+		done
+		sleep ${g_refresh}
+		if [[ -n ${g_cycles} ]]; then
+			let CYCLE_N++
+			(( CYCLE_N >= g_cycles )) && break
+		fi
+	done
+fi
+
+clean_n_exit 0

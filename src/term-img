@@ -1,0 +1,128 @@
+#!/bin/bash
+
+# Copyright (C) 2020  Grzegorz Kociołek
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+# Draw an image in a terminal
+
+die() {
+	echo "$*" >&2
+	exit 1
+}
+
+progname=${0##*/}
+
+usage() {
+	{
+		echo " Display an image in a terminal."
+		echo "Usage: ${progname} [-p <x:y>] [-s <w:h>] <img>"
+		echo
+		echo "Options:"
+		echo "-p    Position of an image (relative to a terminal window)."
+		echo "-s    Size of an image."
+		echo "-w    Delay before printing an image (in seconds)."
+	} >&2
+	exit $1
+}
+
+is_ge_0_int() {
+	[[ $1 =~ ^(0|[1-9][0-9]*)$ ]]
+}
+
+is_ge_0_float() {
+	[[ $1 =~ ^(0|[1-9][0-9]*)(\.[0-9]*)?$ ]]
+}
+
+read_coord() {
+	local str=$1
+	local store_name=$2
+
+	local c_x c_y
+
+	c_x=${str%%:*}
+	c_y=${str#*:}
+
+	is_ge_0_int "$c_x" && is_ge_0_int "$c_y" \
+		|| die "Invalid $3"
+
+	eval $store_name'_X=$c_x'
+	eval $store_name'_Y=$c_y'
+}
+
+w3mimg_paths=( /{,usr/{,local/}}lib{,64}/w3m/w3mimgdisplay )
+
+w3mimg=
+for i in ${w3mimg_paths[@]}; do
+	[[ -x $i ]] && w3mimg=$i
+done
+
+[[ -z $w3mimg ]] && die "No executable w3mimgdisplay found"
+
+DELAY=0.1
+IMG=
+POS_X=0
+POS_Y=0
+SIZE_X=0
+SIZE_Y=0
+while [[ -n $1 ]]; do
+	case "$1" in
+		-p )
+			[[ -z $2 ]] && usage 1
+			read_coord "$2" POS "position"
+
+			shift 1
+			;;
+		-s )
+			[[ -z $2 ]] && usage 1
+			read_coord "$2" SIZE "size"
+
+			shift 1
+			;;
+		-w )
+			[[ -z $2 ]] && usage 1
+			DELAY=$2
+			is_ge_0_float $DELAY || die "Invalid delay"
+
+			shift 1
+			;;
+		-- )
+			IMG=$2
+			shift 1
+			;;
+		-* )
+			usage 1
+			;;
+		* )
+			IMG=$1
+			;;
+	esac
+	shift 1
+done
+
+[[ -n $IMG ]] || die "Image not specified"
+[[ -r $IMG ]] || die "Image not readable"
+
+if [[ $SIZE_X == 0 || $SIZE_Y == 0 ]]; then
+	sz_data=$(identify -format "%w:%h" "$IMG") || die "Invalid image"
+	SIZE_X=${sz_data%:*}
+	SIZE_Y=${sz_data#*:}
+fi
+
+{
+	sleep $DELAY
+	printf '%b\n%s;\n%s\n' "0;1;$POS_X;$POS_Y;$SIZE_X;$SIZE_Y;;;;;$IMG" 3 4 |\
+		$w3mimg -bg $'\n' &>/dev/null
+} &
+
