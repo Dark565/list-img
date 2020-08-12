@@ -150,6 +150,14 @@ lines_down() {
 	printf "\e[$1E"
 }
 
+nocaseregex() {
+	local result
+	shopt -s nocasematch
+	[[ $1 =~ $2 ]]
+	shopt -u nocasematch
+	return $result
+}
+
 winch() {
 	clean_n_die "Resizing not supported"
 }
@@ -163,6 +171,7 @@ ansi_normal=$'\e[0m'
 print_color() {
 	printf "$1%s${ansi_normal}" "$*"
 }
+shopt -u nocasematch
 export LANG=C
 export LC_ALL=C
 
@@ -275,7 +284,7 @@ while read -r LINE; do
 						FILE_H=$g_img_width
 					fi
 
-					if ! [[ $LINE =~ \.(jpe?g|png)$ ]]; then
+					if ! nocaseregex "$LINE" '\.(jpe?g|png)$'; then
 						tmp_file_path="${TEMP_DIR}/$f_cnt.png"
 						if ! convert -scale $FILE_W:$FILE_H "$LINE" "$tmp_file_path" 2>/dev/null; then
 							prt_color="${ansi_yellow}"

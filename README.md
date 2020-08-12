@@ -17,6 +17,21 @@ To install it, execute install.sh in the project root.
 - ImageMagick
 - ncurses
 
+## Color legend
+Red - 
+
+## Example usage
+
+```sh
+# Look for all png and jpg files in all subdirectories and print them
+fd --type f '\.(png|jpe?g)$' | list-img
+
+# Print all images in current dir
+ls | list-img
+
+# Get all png images in current directory and print them
+ls | grep '\.png' | sort -R | list-img
+```
 ## License
  © Grzegorz Kociołek 2020  
  GPLv3
