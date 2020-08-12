@@ -18,7 +18,12 @@ To install it, execute install.sh in the project root.
 - ncurses
 
 ## Color legend
-Red - 
+- Green - image
+- Yellow - broken image
+- Blue - regular file
+- Gray - directory
+- Default color - other
+- Red - invalid file
 
 ## Example usage
 
